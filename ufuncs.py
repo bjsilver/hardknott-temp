@@ -76,39 +76,3 @@ for csv_path in csv_paths:
         df = read_ibutton_csv(csv_path)
         print(csv_path)
 
-#%%
-# serial number in data '7EFFAD' doesn't exist i metadata
-csv_paths = glob('./monitoring_data/20*/*/*.csv')
-csv_paths.extend(glob('./monitoring_data/20*/*.csv'))
-dserials = []
-for csv_path in csv_paths:
-    if is_ibutton_csv(csv_path):
-        if '2026' in csv_path:
-            meta = read_ibutton_metadata(csv_path)
-            dserials.append(meta['1-Wire/iButton Registration Number'])
-
-    len(np.unique(dserials))
-
-dserials = np.unique(dserials)
-dserials = [d[-8:-2] for d in dserials]
-
-#%%
-years = (2022, 2023, 2024, 2026)
-serials = [mdf[f'ibutton_serial_{year}'].dropna().unique() for year in years]
-serials = np.unique(np.concatenate(serials))
-
-iby = pd.DataFrame(False, index=years, columns=serials)
-for year in years:
-    year_serials = mdf[f'ibutton_serial_{year}'].dropna().unique()
-    for s in year_serials:
-        iby.loc[year, s] = True
-
-mserials = list(iby.loc[2026, iby.loc[2026]].index)
-
-common = [s for s in mserials if s in dserials]
-data_only = [s for s in dserials if s not in mserials]
-meta_only = [s for s in mserials if s not in dserials]
-
-print(f'{(', ').join(common)} are found in metadata and data')
-print(f'{(', ').join(data_only)} are found in data but not metadata')
-print(f'{(', ').join(meta_only)} are found in metadata but not data')
