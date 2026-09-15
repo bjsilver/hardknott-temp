@@ -5,9 +5,6 @@ from glob import glob
 import numpy as np
 import re
 
-# load metadata df
-mdf = pd.read_csv('./metadata.csv')
-
 VARIABLE_LOOKUP = {'%RH':'RH',
                    'C':'T'}
 
@@ -20,7 +17,7 @@ class TMSLookup:
     def get_site(self, tms_serial):
         return self.lookup[tms_serial]
 
-tms_lookup = TMSLookup(mdf)
+
 
 def read_ibutton_metadata(csv_path):
     # read metadata at top of csv
@@ -86,10 +83,6 @@ def is_tms_csv(csv_path):
     else:
         return False
 
-#%%
-csv_paths = glob('./monitoring_data/20*/*/*.csv')
-csv_paths.extend(glob('./monitoring_data/20*/*.csv'))
-
 def load_ibutton_df(csv_paths):
     srs = {}
     for csv_path in csv_paths:
@@ -106,8 +99,6 @@ def load_ibutton_df(csv_paths):
     df = sr_clean.unstack(level=[0, 1])
 
     return df
-
-#%%
 
 
 
@@ -126,7 +117,7 @@ def read_tms_csv(csv_path):
         df['datetime'] = df['datetime'].mask(df['datetime'].str.len() == str_len, 
                                             df['datetime'] + addition)
 
-    datetime = df['datetime'][0]
+    datetime = df['datetime'].iloc[0]
     if '/' in datetime:
         date_sep = '/'
     elif '.' in datetime:
@@ -142,9 +133,10 @@ def read_tms_csv(csv_path):
     df['datetime'] = pd.to_datetime(df['datetime'], format=format_str)
 
 
-    df = df.set_index('datetime')
+    df = df.set_index('datetime').sort_index()
 
-    df = df.loc[slice(TMS_DEPLOTMENT_DATE, None), :]
+    if df.index[0] < pd.Timestamp(TMS_DEPLOTMENT_DATE):
+        df = df.loc[slice(TMS_DEPLOTMENT_DATE, None), :]
 
     fname = csv_path.split('/')[-1]
     tms_serial = fname.split('_')[1]
@@ -162,10 +154,19 @@ def load_tms_df(csv_paths):
             df = read_tms_csv(csv_path)
             print(csv_path)
             if not df.empty:
-                dfs.append(df.stack(level=[0,1,2]))
+                dfs.append(df.stack(level=[0,1,2], future_stack=True))
 
     df_stacked = pd.concat(dfs)
     df_clean = df_stacked[~df_stacked.index.duplicated(keep='first')]
     df = df_clean.unstack([1,2,3]).astype(float)
     return df
 
+# mdf = pd.read_csv('./metadata.csv')
+# tms_lookup = TMSLookup(mdf)
+
+# csv_paths = glob('./monitoring_data/20*/*/*.csv')
+# csv_paths.extend(glob('./monitoring_data/20*/*.csv'))
+# df = load_tms_df(csv_paths)
+
+# # extract all soil moisture count columns
+# sm = df.xs('soil moisture count', level='variable', axis=1)
