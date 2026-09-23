@@ -1,9 +1,9 @@
 #%%
 import pandas as pd
-from constants import STORAGE_DIR, TMS_DEPLOTMENT_DATE
+from constants import STORAGE_DIR, TMS_DEPLOTMENT_DATE, CACHE_PATH
 from glob import glob
-import numpy as np
 import re
+import os
 
 VARIABLE_LOOKUP = {'%RH':'RH',
                    'C':'T'}
@@ -35,7 +35,7 @@ def find_ibutton_site(mdf, meta, year):
     site = mdf.loc[mdf[f'ibutton_serial_{year}'] == serial, 'site'].item()
     return site
 
-def read_ibutton_csv(csv_path):
+def read_ibutton_csv(csv_path, mdf):
 
     df = pd.read_csv(csv_path, sep=r'@|,', engine='python',
                     header=18, parse_dates=False)
@@ -58,6 +58,10 @@ def read_ibutton_csv(csv_path):
     df.index = pd.to_datetime(time_strs, format='mixed')
     df.index.name = 'datetime'
     df = df.drop(date_cols, axis=1).squeeze()
+
+    # round to nearest 30 mins
+    df = df.asfreq('30min')
+    df.index = df.index.round('30min')
 
     year = df.index.year.unique().item()
     site = find_ibutton_site(mdf, meta, year)
@@ -83,27 +87,9 @@ def is_tms_csv(csv_path):
     else:
         return False
 
-def load_ibutton_df(csv_paths):
-    srs = {}
-    for csv_path in csv_paths:
-        if is_ibutton_csv(csv_path):
-            sr = read_ibutton_csv(csv_path)
-            print(csv_path)
-            if sr.name not in srs.keys():
-                srs[sr.name] = sr
-            else:
-                srs[sr.name] = pd.concat([srs[sr.name], sr])
-
-    sr = pd.concat(srs)
-    sr_clean = sr[~sr.index.duplicated(keep='first')]
-    df = sr_clean.unstack(level=[0, 1])
-
-    return df
 
 
-
-
-def read_tms_csv(csv_path):
+def read_tms_csv(csv_path, tms_lookup):
     headers = ['datetime', 'time_zone', 'T1', 'T2', 'T3', 'soil moisture count',
             'shake','error_flag', 'soil moisture']
     df = pd.read_csv(csv_path, sep=';', header=None, index_col=0,
@@ -112,17 +98,18 @@ def read_tms_csv(csv_path):
         return df
     
     df.columns = headers
-
+    # if HH:MM:SS is missing, add it to the datetime string
     for str_len, addition in zip((10, 13, 16), [' 00:00:00', '00:00', ':00']):
         df['datetime'] = df['datetime'].mask(df['datetime'].str.len() == str_len, 
                                             df['datetime'] + addition)
-
+    # deal with different separators in the date string
     datetime = df['datetime'].iloc[0]
     if '/' in datetime:
         date_sep = '/'
     elif '.' in datetime:
         date_sep = '.'
-    
+
+    # determine the datetime format based on the first part of the string
     if len(datetime.split(date_sep)[0]) == 4: #yearfirst
         format_str = f'%Y{date_sep}%m{date_sep}%d %H:%M:%S'
     elif len(datetime.split(date_sep)[0]) == 2: #dayfirst
@@ -147,11 +134,37 @@ def read_tms_csv(csv_path):
                                            names=['site', 'device', 'variable'])
     return df
 
-def load_tms_df(csv_paths):
+def cache_df(df, df_name, cache_path=CACHE_PATH):
+    df.to_parquet(f'{cache_path}{df_name}.parquet', 
+                  engine='pyarrow', index=True)
+
+def load_cached_df(df_name, cache_path=CACHE_PATH):
+    df = pd.read_parquet(f'{cache_path}{df_name}.parquet', engine='pyarrow')
+    return df
+
+def load_ibutton_df(csv_paths, mdf):
+    srs = {}
+    for csv_path in csv_paths:
+        if is_ibutton_csv(csv_path):
+            sr = read_ibutton_csv(csv_path, mdf)
+            print(csv_path)
+            if sr.name not in srs.keys():
+                srs[sr.name] = sr
+            else:
+                srs[sr.name] = pd.concat([srs[sr.name], sr])
+
+    sr = pd.concat(srs)
+    sr_clean = sr[~sr.index.duplicated(keep='first')]
+    df = sr_clean.unstack(level=[0, 1])
+    df.columns.names = ['site', 'variable']
+
+    return df
+
+def load_tms_df(csv_paths, tms_lookup):
     dfs = []
     for csv_path in csv_paths:
         if is_tms_csv(csv_path):
-            df = read_tms_csv(csv_path)
+            df = read_tms_csv(csv_path, tms_lookup)
             print(csv_path)
             if not df.empty:
                 dfs.append(df.stack(level=[0,1,2], future_stack=True))
@@ -161,12 +174,28 @@ def load_tms_df(csv_paths):
     df = df_clean.unstack([1,2,3]).astype(float)
     return df
 
-# mdf = pd.read_csv('./metadata.csv')
-# tms_lookup = TMSLookup(mdf)
+def load_data(reset_caches=False):
 
-# csv_paths = glob('./monitoring_data/20*/*/*.csv')
-# csv_paths.extend(glob('./monitoring_data/20*/*.csv'))
-# df = load_tms_df(csv_paths)
 
-# # extract all soil moisture count columns
-# sm = df.xs('soil moisture count', level='variable', axis=1)
+    caches_exist = False
+    if os.path.exists(f'{CACHE_PATH}/ibutton.parquet') and os.path.exists(f'{CACHE_PATH}/tms.parquet'):
+        caches_exist = True
+
+    if reset_caches or not caches_exist:
+        # load metadata and create TMSLookup instance
+        mdf = pd.read_csv('./metadata.csv')
+        tms_lookup = TMSLookup(mdf)
+        csv_paths = glob('./monitoring_data/20*/*/*.csv')
+
+        ibut_df = load_ibutton_df(csv_paths, mdf)
+        cache_df(ibut_df, 'ibutton', CACHE_PATH)
+
+        tms_df = load_tms_df(csv_paths, tms_lookup)
+        cache_df(tms_df, 'tms', CACHE_PATH)
+    else:
+        ibut_df = load_cached_df('ibutton', CACHE_PATH)
+        tms_df = load_cached_df('tms', CACHE_PATH)
+
+    return ibut_df, tms_df
+
+
